@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Glasses Desktop (SBS)
+Comment=Desktop mirrored to both eyes of SBS display glasses
+Exec=/usr/local/bin/glasses-desktop
+Type=Application
+DesktopNames=sway

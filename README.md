@@ -23,12 +23,16 @@ curl -fsSL https://raw.githubusercontent.com/GlassOnTin/glasses-desktop/main/ins
 
 ## Run
 
-1. Switch to a TTY: `Ctrl+Alt+F3`, log in.
-2. `glasses-desktop`
-3. Put the glasses in SBS mode whenever (hold power button on Viture).
+**From the login screen (recommended):** log out, pick **Glasses Desktop
+(SBS)** from the session menu, log in. Log out (`Super+Shift+e`) to return
+to your normal desktop. If your machine auto-logs-in (default on Raspberry
+Pi OS), the session menu appears after logging out once.
 
-Your normal desktop session pauses on its VT while sway owns the display;
-exit with `Super+Shift+e` and switch back (`Ctrl+Alt+F7` or similar).
+**Without logging out:** switch to a TTY (`Ctrl+Alt+F3`), log in, run
+`glasses-desktop`. Your existing session pauses on its VT while sway owns
+the display; exit sway and switch back (`Ctrl+Alt+F7` or similar).
+
+Put the glasses in SBS mode whenever — the desktop follows the toggle live.
 
 Windows open floating with titlebars — use the panel's start menu and
 mouse, or: `Super+Enter` terminal, `Super+Shift+q` close, `Super+1..4`

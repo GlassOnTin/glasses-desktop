@@ -15,6 +15,10 @@ echo "==> Installing commands to /usr/local/bin"
 sudo install -Dm755 "$SRC/start-glasses-desktop.sh" /usr/local/bin/glasses-desktop
 sudo install -Dm755 "$SRC/setup-mirror.sh" /usr/local/bin/glasses-desktop-setup
 
+echo "==> Registering login-manager session"
+sudo install -Dm644 "$SRC/glasses-desktop.desktop" \
+    /usr/share/wayland-sessions/glasses-desktop.desktop
+
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}/sway-glasses/config"
 if [ -e "$CFG" ]; then
     echo "==> Keeping existing config: $CFG"
