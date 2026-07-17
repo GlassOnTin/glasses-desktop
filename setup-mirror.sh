@@ -8,14 +8,16 @@
 #   - wf-panel-pi alive in this session (it can crash on hotplug)
 # After repairs, cursor wiggles force fresh frames (wlroots renders on
 # damage only; a static desktop leaves new mirrors black).
-LOG="$HOME/viture-xr/glasses-desktop/setup.log"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/glasses-desktop"
+mkdir -p "$STATE"
+LOG="$STATE/setup.log"
 exec >>"$LOG" 2>&1
 echo "=== setup $$ $(date) ==="
 
 # only one watcher may run. flock, not pgrep: command-substitution
 # subshells and launching shells share this script's cmdline, so any
 # pattern match kills innocents (including the launcher itself).
-LOCK="$HOME/viture-xr/glasses-desktop/.watcher.lock"
+LOCK="$STATE/watcher.lock"
 exec 9>"$LOCK"
 if ! flock -n 9; then
     oldpid=$(cat "$LOCK.pid" 2>/dev/null)
@@ -151,7 +153,7 @@ while :; do
         ;;
     OK)
         ipc_fails=0
-        if ! panel_alive; then
+        if command -v wf-panel-pi >/dev/null && ! panel_alive; then
             echo "$(date +%T) panel dead, respawning"
             swaymsg exec wf-panel-pi
             sleep 2

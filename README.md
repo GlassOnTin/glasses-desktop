@@ -1,54 +1,53 @@
-# glasses-desktop — SBS Wayland desktop for the Viture glasses
+# glasses-desktop
 
-The whole desktop (any window: terminal, browser, ...) visible in **both
-eyes** of the glasses, not just the left. labwc composites windows onto one
-wide canvas, so a window at x<1920 lands only in the left eye; this uses
-**sway** instead:
+A full Linux desktop in **both eyes** of SBS display glasses (Viture,
+XREAL, …), using sway. Regular compositors put a window at x<1920 in the
+left eye only; here the desktop lives on a virtual 1920×1080 output and the
+physical output shows one mirrored copy per eye.
 
-- The desktop lives on a **1920×1080 headless virtual output** (HEADLESS-1).
-- The physical glasses output shows **wl-mirror** copies of it:
-  - glasses in SBS mode (3840×1080): two mirrors side by side = left | right eye
-  - glasses in 2D mode (1920×1080): one fullscreen mirror
-- `setup-mirror.sh` is a reconciliation loop (verified on hardware
-  2026-07-17, stable through repeated 2D↔SBS toggles). Every second it
-  enforces: desktop workspaces on HEADLESS-1 (an EDID flap makes sway
-  scatter them), workspace "mirror" visible on the physical output, the
-  right mirror count, widest available mode driven (sway doesn't always
-  adopt 3840×1080 after the flip), and wf-panel-pi alive (it can crash on
-  hotplug). After repairs it wiggles the cursor a few px to force fresh
-  frames — wlroots renders on damage only, so new mirrors on a static
-  desktop would otherwise stay black.
-- The desktop shell is the Pi's own `wf-panel-pi` (start menu, taskbar,
-  clock); app windows open floating with titlebars for mouse-first use.
+- Glasses in **SBS mode** (3840×1080): two mirrors, left | right eye.
+- Glasses in **2D mode** (1920×1080): one fullscreen mirror.
+- Toggling the glasses reconfigures live — a watcher re-checks every second
+  and also repairs output/workspace scrambles, crashed mirrors, and the
+  panel after display hotplugs.
 
-## Run it
+Developed on a Raspberry Pi 5 (Wayland/labwc based Raspberry Pi OS); should
+apply to any wlroots-capable box. Uses the Pi's `wf-panel-pi` for a start
+menu/taskbar when available.
 
-The real session needs the GPU, so it can't start while labwc is showing.
-From a TTY:
+## Install
 
-1. `Ctrl+Alt+F3`, log in as ian
-2. `~/viture-xr/glasses-desktop/start-glasses-desktop.sh`
-3. labwc's VT pauses while sway owns the display; switch back after
-   exiting sway (`Super+Shift+e`).
+```
+curl -fsSL https://raw.githubusercontent.com/GlassOnTin/glasses-desktop/main/install.sh | bash
+```
 
-Keys (Super = mod): `Super+Enter` terminal, `Super+Shift+q` close window,
-`Super+1..4` workspaces, `Super+space` float, `Super+f` fullscreen.
+## Run
 
-Config: `sway-config` (symlinked from `~/.config/sway-glasses/config`).
-Setup log: `~/viture-xr/glasses-desktop/setup.log`.
+1. Switch to a TTY: `Ctrl+Alt+F3`, log in.
+2. `glasses-desktop`
+3. Put the glasses in SBS mode whenever (hold power button on Viture).
 
-Nested smoke test (safe, inside the running desktop session):
-`WLR_BACKENDS=wayland,headless WLR_HEADLESS_OUTPUTS=1 sway -c ~/.config/sway-glasses/config`
+Your normal desktop session pauses on its VT while sway owns the display;
+exit with `Super+Shift+e` and switch back (`Ctrl+Alt+F7` or similar).
 
-## Next idea: per-window depth (v1)
+Windows open floating with titlebars — use the panel's start menu and
+mouse, or: `Super+Enter` terminal, `Super+Shift+q` close, `Super+1..4`
+workspaces, `Super+f` fullscreen, `Super+space` toggle floating.
 
-Replace the two wl-mirror instances with a custom presenter that:
-1. captures HEADLESS-1 via wlr-screencopy (dmabuf → GL texture),
-2. reads window bounding boxes + stacking/focus order from sway IPC
-   (`swaymsg -t get_tree` / subscribe to window events),
-3. paints a synthetic depth map from the window rects (focused nearest,
-   background further) and warps per eye — the same disparity math as
-   gles-stereo-shim's Phase 4 depth shader.
+## Files
 
-Result: the focused window pops toward you, others sit deeper. Modest
-disparities (5–15 px) keep edge artifacts small.
+- `glasses-desktop` — session launcher (`start-glasses-desktop.sh`)
+- `glasses-desktop-setup` — output/mirror reconciliation watcher
+  (`setup-mirror.sh`); log: `~/.local/state/glasses-desktop/setup.log`
+- `~/.config/sway-glasses/config` — sway config (`sway-config`)
+
+## 3D apps
+
+For stereo 3D of individual GLES apps (not just a flat desktop), see
+[gles-stereo-shim](https://github.com/GlassOnTin/gles-stereo-shim).
+Planned here: replacing wl-mirror with a presenter that assigns per-window
+depth from stacking order, so the focused window pops toward you.
+
+## License
+
+MIT

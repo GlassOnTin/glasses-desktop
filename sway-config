@@ -52,4 +52,4 @@ for_window [app_id="at.yrlf.wl_mirror"] border none
 # the Pi's regular panel (start menu, clock, volume, wifi) on the desktop
 exec wf-panel-pi
 
-exec ~/viture-xr/glasses-desktop/setup-mirror.sh
+exec glasses-desktop-setup
