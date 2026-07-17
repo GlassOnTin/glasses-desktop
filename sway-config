@@ -1,0 +1,55 @@
+# sway "glasses desktop" — the desktop lives on a 1920x1080 headless
+# virtual output; the physical 3840x1080 SBS output shows two mirrors of it
+# side by side (left eye | right eye). Set up by setup-mirror.sh at start.
+
+set $mod Mod4
+set $term foot
+
+default_border normal
+default_floating_border normal
+focus_follows_mouse no
+font pango:monospace 10
+
+# mouse-first: regular app windows open floating with titlebars, like a
+# traditional desktop (drag by titlebar, or hold Super and drag anywhere)
+for_window [app_id=".*"] floating enable
+for_window [class=".*"] floating enable
+
+# --- keys (compact subset of sway defaults) ---
+floating_modifier $mod normal
+bindsym $mod+Return exec $term
+bindsym $mod+Shift+q kill
+bindsym $mod+Shift+c reload
+bindsym $mod+Shift+e exec swaymsg exit
+bindsym $mod+f fullscreen
+bindsym $mod+space floating toggle
+
+bindsym $mod+Left focus left
+bindsym $mod+Right focus right
+bindsym $mod+Up focus up
+bindsym $mod+Down focus down
+bindsym $mod+Shift+Left move left
+bindsym $mod+Shift+Right move right
+bindsym $mod+Shift+Up move up
+bindsym $mod+Shift+Down move down
+
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+
+# mirror windows always land on the mirror workspace, regardless of what
+# was focused when they mapped (kills the async-exec placement race) —
+# and they must stay tiled, borderless, pixel-exact
+assign [app_id="at.yrlf.wl_mirror"] workspace mirror
+for_window [app_id="at.yrlf.wl_mirror"] floating disable
+for_window [app_id="at.yrlf.wl_mirror"] border none
+
+# the Pi's regular panel (start menu, clock, volume, wifi) on the desktop
+exec wf-panel-pi
+
+exec ~/viture-xr/glasses-desktop/setup-mirror.sh
