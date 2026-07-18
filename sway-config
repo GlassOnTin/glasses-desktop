@@ -10,6 +10,11 @@ default_floating_border normal
 focus_follows_mouse no
 font pango:monospace 10
 
+# keep the mouse on the desktop output: over the physical output clicks
+# would hit the mirror picture and the cursor would show in one eye only
+input type:pointer map_to_output HEADLESS-1
+input type:touchpad map_to_output HEADLESS-1
+
 # mouse-first: regular app windows open floating with titlebars, like a
 # traditional desktop (drag by titlebar, or hold Super and drag anywhere)
 for_window [app_id=".*"] floating enable

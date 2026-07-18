@@ -47,13 +47,16 @@ swaymsg output HEADLESS-1 enable
 swaymsg 'output HEADLESS-1 mode --custom 1920x1080'
 swaymsg output HEADLESS-1 position 0 0
 for i in 1 2 3 4; do swaymsg "workspace $i output HEADLESS-1"; done
+# re-assert pointer confinement now that HEADLESS-1 definitely exists
+swaymsg 'input type:pointer map_to_output HEADLESS-1'
+swaymsg 'input type:touchpad map_to_output HEADLESS-1'
 swaymsg workspace 1
 swaymsg exec foot
 
 # Prints one line:
 #   NOPHYS
 #   MODESET <phys> <WxH@Hz>
-#   OK|FIX <phys> <W> <H> <want> <have> <mirror_ok:1|0> <stray_ws_csv|->
+#   OK|FIX <phys> <W> <H> <want> <have> <mirror_ok:1|0> <stray_ws_csv|-> <pos_ok:1|0>
 state() {
     swaymsg -t get_outputs -r >/tmp/gd-outputs.json 2>/dev/null || { echo IPCFAIL; return; }
     swaymsg -t get_workspaces -r >/tmp/gd-ws.json 2>/dev/null
@@ -116,9 +119,20 @@ panel_alive() {
     return 1
 }
 
+# kill by comm, but ONLY processes of this session — a plain pkill also
+# hits siblings in other sessions (nested test rigs, another seat) and two
+# watchers then kill each other's mirrors in an endless loop
+kill_mine() {
+    for pid in $(pgrep -x "$1"); do
+        if grep -qz "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" "/proc/$pid/environ" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
+}
+
 ipc_fails=0
 while :; do
-    read -r status a b c d e f g <<< "$(state)"
+    read -r status a b c d e f g h <<< "$(state)"
     case "$status" in
     IPCFAIL|'')
         ipc_fails=$((ipc_fails + 1))
@@ -150,15 +164,17 @@ while :; do
         swaymsg "move workspace to output $a"
         # 3. right number of mirror windows (comm is truncated to 15
         #    chars, so "glasses-presenter" matches as "glasses-present")
-        pkill -x wl-mirror
-        pkill -x glasses-present
+        kill_mine wl-mirror
+        kill_mine glasses-present
         sleep 0.5
         for _ in $(seq "$d"); do
             swaymsg exec "$MIRROR_CMD"
             sleep 0.7
         done
-        # 4. focus back to the desktop (mirror stays visible on phys)
+        # 4. focus back to the desktop (mirror stays visible on phys),
+        #    and warp the pointer home in case it was stranded on phys
         swaymsg 'workspace 1'
+        swaymsg 'seat seat0 cursor set 960 540'
         # 5. force fresh frames (single-arg quoting: swaymsg must not
         #    parse '-3' as its own option)
         for _ in 1 2 3 4 5; do

@@ -258,7 +258,7 @@ int main(int argc, char **argv)
 			{ .fd = wl_fd, .events = POLLIN },
 			{ .fd = a.ipc_fd, .events = POLLIN },
 		};
-		if (poll(pfd, 2, -1) < 0 && errno != EINTR) {
+		if (poll(pfd, 2, 200) < 0 && errno != EINTR) {
 			wl_display_cancel_read(a.dpy);
 			break;
 		}
@@ -275,7 +275,10 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (!a.cap.frame)
+		/* pace captures at render rate: only ask for the next frame
+		 * once the previous one has been consumed, else the capture
+		 * loop spins the compositor's render loop flat out */
+		if (!a.cap.frame && !a.cap.ready && !a.cap.content_new)
 			capture_start(&a);
 		maybe_render(&a);
 	}

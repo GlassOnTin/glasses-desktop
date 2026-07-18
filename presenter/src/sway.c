@@ -275,7 +275,19 @@ static void handle_msg(struct app *a, uint32_t type, const char *payload,
 			sway_request_tree(a);
 		}
 	} else if (type & 0x80000000u) {
-		sway_request_tree(a); /* any subscribed event → refresh */
+		/* title changes don't move rects and fire constantly */
+		if ((type & 0xff) == 3) { /* window event */
+			struct json_object *ev = json_tokener_parse(payload);
+			if (ev) {
+				struct json_object *ch = jget(ev, "change");
+				const char *s = json_object_get_string(ch);
+				bool skip = s && !strcmp(s, "title");
+				json_object_put(ev);
+				if (skip)
+					return;
+			}
+		}
+		sway_request_tree(a); /* any other subscribed event → refresh */
 	}
 	/* subscribe reply and anything else: ignore */
 }
