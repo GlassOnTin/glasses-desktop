@@ -4,7 +4,9 @@
 set -e
 
 echo "==> Installing dependencies"
-sudo apt-get install -y --no-install-recommends git sway wl-mirror foot python3
+sudo apt-get install -y --no-install-recommends git sway wl-mirror foot python3 \
+    gcc make pkg-config libwayland-dev libwayland-bin wayland-protocols \
+    libegl-dev libgles-dev libgbm-dev libdrm-dev libjson-c-dev
 
 SRC=$(mktemp -d)
 trap 'rm -rf "$SRC"' EXIT
@@ -14,6 +16,13 @@ git clone --depth 1 https://github.com/GlassOnTin/glasses-desktop "$SRC"
 echo "==> Installing commands to /usr/local/bin"
 sudo install -Dm755 "$SRC/start-glasses-desktop.sh" /usr/local/bin/glasses-desktop
 sudo install -Dm755 "$SRC/setup-mirror.sh" /usr/local/bin/glasses-desktop-setup
+
+echo "==> Building depth presenter"
+if make -C "$SRC/presenter" && sudo make -C "$SRC/presenter" install; then
+    echo "==> Installed glasses-presenter"
+else
+    echo "note: presenter build failed; the desktop will use wl-mirror (flat)"
+fi
 
 echo "==> Registering login-manager session"
 sudo install -Dm644 "$SRC/glasses-desktop.desktop" \

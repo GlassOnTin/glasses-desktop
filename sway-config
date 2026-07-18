@@ -48,6 +48,9 @@ bindsym $mod+Shift+4 move container to workspace number 4
 assign [app_id="at.yrlf.wl_mirror"] workspace mirror
 for_window [app_id="at.yrlf.wl_mirror"] floating disable
 for_window [app_id="at.yrlf.wl_mirror"] border none
+assign [app_id="glasses-presenter"] workspace mirror
+for_window [app_id="glasses-presenter"] floating disable
+for_window [app_id="glasses-presenter"] border none
 
 # the Pi's regular panel (start menu, clock, volume, wifi) on the desktop
 exec wf-panel-pi

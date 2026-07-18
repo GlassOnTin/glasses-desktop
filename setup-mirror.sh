@@ -4,7 +4,9 @@
 #   - every desktop workspace (everything except "mirror") on HEADLESS-1
 #     (an output EDID flap makes sway evacuate/steal workspaces)
 #   - workspace "mirror" on the physical output and visible there
-#   - N wl-mirror windows: 2 when the output is double-wide (SBS), else 1
+#   - the mirror client: one glasses-presenter (draws both eyes itself and
+#     follows 2D/SBS live), or without it N wl-mirror windows (2 when the
+#     output is double-wide, else 1)
 #   - wf-panel-pi alive in this session (it can crash on hotplug)
 # After repairs, cursor wiggles force fresh frames (wlroots renders on
 # damage only; a static desktop leaves new mirrors black).
@@ -26,6 +28,16 @@ if ! flock -n 9; then
     flock -n 9 || { echo "another watcher holds the lock, exiting"; exit 1; }
 fi
 echo $$ >"$LOCK.pid"
+
+# prefer the depth presenter; wl-mirror is the fallback
+if command -v glasses-presenter >/dev/null; then
+    MIRROR_APP=glasses-presenter
+    MIRROR_CMD=glasses-presenter
+else
+    MIRROR_APP=at.yrlf.wl_mirror
+    MIRROR_CMD='wl-mirror HEADLESS-1'
+fi
+export MIRROR_APP
 
 if ! swaymsg -t get_outputs -r | grep -q '"HEADLESS-1"'; then
     swaymsg create_output
@@ -64,7 +76,10 @@ best = max(phys.get('modes', []) or [{'width': w, 'height': h, 'refresh': 60000}
 if best['width'] > w:
     print(f"MODESET {phys['name']} {best['width']}x{best['height']}@{round(best['refresh']/1000)}Hz")
     raise SystemExit
-want = 2 if w >= 2 * h else 1
+import os
+app = os.environ.get('MIRROR_APP', 'at.yrlf.wl_mirror')
+# one presenter handles both modes; wl-mirror needs one window per eye
+want = 1 if app == 'glasses-presenter' else (2 if w >= 2 * h else 1)
 
 # workspace placement: 'mirror' on phys AND visible there; all others on HEADLESS-1
 mirror_ok, strays = False, []
@@ -77,7 +92,7 @@ for ws in wss:
 have = 0
 def count(n):
     global have
-    if n.get('app_id') == 'at.yrlf.wl_mirror':
+    if n.get('app_id') == app:
         have += 1
     for c in n.get('nodes', []) + n.get('floating_nodes', []):
         count(c)
@@ -133,11 +148,13 @@ while :; do
         swaymsg "workspace mirror output $a"
         swaymsg 'workspace mirror'
         swaymsg "move workspace to output $a"
-        # 3. right number of mirror windows
+        # 3. right number of mirror windows (comm is truncated to 15
+        #    chars, so "glasses-presenter" matches as "glasses-present")
         pkill -x wl-mirror
+        pkill -x glasses-present
         sleep 0.5
         for _ in $(seq "$d"); do
-            swaymsg exec 'wl-mirror HEADLESS-1'
+            swaymsg exec "$MIRROR_CMD"
             sleep 0.7
         done
         # 4. focus back to the desktop (mirror stays visible on phys)
