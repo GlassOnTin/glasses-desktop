@@ -222,6 +222,8 @@ int main(int argc, char **argv)
 		.eye_sign = 1,
 		.running = true,
 		.drm_fd = -1,
+		.any_view_focused = true,
+		.depth_scale = 1.0f,
 	};
 	wl_list_init(&a.outputs);
 	a.pop = envf("GLASSES_DEPTH_POP", 8.0f);
@@ -319,6 +321,19 @@ int main(int argc, char **argv)
 			if (!sway_handle_readable(&a)) {
 				LOGF(&a, 0, "sway IPC closed, exiting");
 				break;
+			}
+		}
+
+		/* poll the tree: layer surfaces (start menu) steal focus
+		 * without emitting any window event */
+		{
+			static struct timespec last;
+			struct timespec now;
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			if ((now.tv_sec - last.tv_sec) * 1000 +
+			    (now.tv_nsec - last.tv_nsec) / 1000000 > 300) {
+				last = now;
+				sway_request_tree(&a);
 			}
 		}
 

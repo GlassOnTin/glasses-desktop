@@ -113,6 +113,8 @@ struct app {
 	int nwins;                       /* back-to-front paint order */
 	int desk_x, desk_y, desk_w, desk_h;
 	bool have_desk;
+	bool any_view_focused;
+	float depth_scale;               /* eased toward 1 (depth) or 0 (flat) */
 
 	/* config */
 	float pop, step, floor_d;

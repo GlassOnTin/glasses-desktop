@@ -274,7 +274,9 @@ static void draw_rect(struct app *a, float dx, float dy, float dw, float dh,
 static float disparity(struct app *a, int rank)
 {
 	float d = a->pop - rank * a->step;
-	return d < a->floor_d ? a->floor_d : d;
+	if (d < a->floor_d)
+		d = a->floor_d;
+	return d * a->depth_scale;
 }
 
 static void draw_eye(struct app *a, float shift_sign)
@@ -310,6 +312,16 @@ bool render_frame(struct app *a)
 		a->desk_w = a->cap.tex_w;
 		a->desk_h = a->cap.tex_h;
 	}
+
+	/* Layer-shell surfaces (start menu, popups) aren't in the sway tree
+	 * — they're baked into the capture above everything, so a window
+	 * quad would drag the overlapping part of a menu to its own depth.
+	 * A keyboard-interactive layer surface steals view focus, so while
+	 * no view is focused, ease the depth field flat. */
+	float target = a->any_view_focused ? 1.0f : 0.0f;
+	a->depth_scale += (target - a->depth_scale) * 0.25f;
+	if (a->depth_scale > target - 0.01f && a->depth_scale < target + 0.01f)
+		a->depth_scale = target;
 
 	glBindFramebuffer(GL_FRAMEBUFFER, buf->fbo);
 	glViewport(0, 0, a->win_w, a->win_h);

@@ -53,9 +53,12 @@ disparity; set them in `~/.config/sway-glasses/config` via
 | `GLASSES_DEPTH_FLOOR` | 0 | minimum disparity (0 = screen plane) |
 | `GLASSES_SWAP_EYES` | 0 | set 1 if depth looks inverted |
 
-Set `GLASSES_DEPTH_POP=0 GLASSES_DEPTH_STEP=0` for a flat mirror. Known
-cosmetic artifact: a few-pixel "echo" at window edges where a shifted
-window exposes its own copy in the flat desktop capture behind it.
+Set `GLASSES_DEPTH_POP=0 GLASSES_DEPTH_STEP=0` for a flat mirror.
+
+Panel menus and other overlays aren't windows sway can report, so their
+pixels can't be depth-separated from windows they cover; while one holds
+keyboard focus (e.g. the start menu is open) the depth field eases flat,
+and pops back when it closes.
 
 If `glasses-presenter` is missing (e.g. its build failed), the watcher
 falls back to flat wl-mirror copies automatically.

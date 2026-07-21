@@ -225,6 +225,11 @@ static void parse_tree(struct app *a, struct json_object *root)
 		if (c.v[i].rank < 0)
 			c.v[i].rank = c.rank_counter++;
 
+	a->any_view_focused = false;
+	for (int i = 0; i < c.n; i++)
+		if (c.v[i].focused)
+			a->any_view_focused = true;
+
 	/* paint back-to-front: tiled (never overlap), then floating by
 	 * descending rank so the most recently focused lands on top */
 	a->nwins = 0;
