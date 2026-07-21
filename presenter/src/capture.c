@@ -4,45 +4,54 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <gbm.h>
 #include <drm_fourcc.h>
 #include "linux-dmabuf-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "presenter.h"
 
+double cap_ms_total;
+int cap_ms_n;
+static struct timespec cap_t0;
+
 static PFNEGLCREATEIMAGEKHRPROC p_eglCreateImageKHR;
 static PFNEGLDESTROYIMAGEKHRPROC p_eglDestroyImageKHR;
 static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC p_glEGLImageTargetTexture2DOES;
+static PFNEGLQUERYDMABUFMODIFIERSEXTPROC p_eglQueryDmaBufModifiersEXT;
 
 bool capture_init(struct app *a)
 {
 	struct capture *c = &a->cap;
-	c->drm_fd = -1;
 	c->memfd = -1;
 
 	p_eglCreateImageKHR = (void *)eglGetProcAddress("eglCreateImageKHR");
 	p_eglDestroyImageKHR = (void *)eglGetProcAddress("eglDestroyImageKHR");
 	p_glEGLImageTargetTexture2DOES =
 		(void *)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+	p_eglQueryDmaBufModifiersEXT =
+		(void *)eglGetProcAddress("eglQueryDmaBufModifiersEXT");
 
-	if (!a->dmabuf || !p_eglCreateImageKHR || !p_glEGLImageTargetTexture2DOES) {
-		c->dmabuf_broken = true;
-	} else {
-		for (int i = 128; i < 132; i++) {
-			char path[32];
-			snprintf(path, sizeof path, "/dev/dri/renderD%d", i);
-			c->drm_fd = open(path, O_RDWR | O_CLOEXEC);
-			if (c->drm_fd < 0)
-				continue;
-			c->gbm = gbm_create_device(c->drm_fd);
-			if (c->gbm)
-				break;
-			close(c->drm_fd);
-			c->drm_fd = -1;
-		}
-		if (!c->gbm) {
-			LOGF(a, 0, "no gbm render node, using shm capture");
-			c->dmabuf_broken = true;
+	if (getenv("GLASSES_NO_DMABUF") || !a->gbm ||
+	    !a->dmabuf || !p_eglCreateImageKHR || !p_glEGLImageTargetTexture2DOES)
+		c->dma_impossible = true;
+
+	/* On split render/display boards (Pi 5: v3d + rp1) the Wayland EGL
+	 * display may only import LINEAR dmabufs, and v3d samples linear
+	 * textures via an uncached CPU shadow copy (~190 ms/frame). The shm
+	 * path (cached memcpy into a driver-tiled texture) is far faster. */
+	if (!c->dma_impossible && p_eglQueryDmaBufModifiersEXT) {
+		uint64_t mods[64];
+		EGLint n = 0;
+		p_eglQueryDmaBufModifiersEXT(a->edpy, 0x34325258 /* XR24 */, 64,
+			(EGLuint64KHR *)mods, NULL, &n);
+		bool tiled = false;
+		for (EGLint i = 0; i < n; i++)
+			if (mods[i] != 0 && mods[i] != 0x00ffffffffffffffULL)
+				tiled = true;
+		if (!tiled) {
+			LOGF(a, 0, "EGL dmabuf import is linear-only, using shm capture");
+			c->dma_impossible = true;
 		}
 	}
 	return true;
@@ -70,8 +79,24 @@ static bool ensure_dmabuf_buffer(struct app *a)
 		c->bo = NULL;
 	}
 
-	c->bo = gbm_bo_create(c->gbm, c->dma_w, c->dma_h, c->dma_format,
-		GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+	/* tiled, not LINEAR: V3D samples linear textures through a ~200ms/
+	 * frame conversion path. Allocate with a modifier EGL says it can
+	 * import, so the compositor's blit, our sampling, and the EGLImage
+	 * import all agree (a driver-picked modifier can fail the import). */
+	uint64_t mods[64];
+	EGLint nmods = 0;
+	if (p_eglQueryDmaBufModifiersEXT)
+		p_eglQueryDmaBufModifiersEXT(a->edpy, c->dma_format, 64,
+			(EGLuint64KHR *)mods, NULL, &nmods);
+	for (EGLint i = 0; i < nmods; i++)
+		LOGF(a, 2, "egl modifier[%d] = %llx", i,
+			(unsigned long long)mods[i]);
+	if (nmods > 0)
+		c->bo = gbm_bo_create_with_modifiers2(a->gbm, c->dma_w, c->dma_h,
+			c->dma_format, mods, nmods, GBM_BO_USE_RENDERING);
+	if (!c->bo)
+		c->bo = gbm_bo_create(a->gbm, c->dma_w, c->dma_h, c->dma_format,
+			GBM_BO_USE_RENDERING);
 	if (!c->bo) {
 		LOGF(a, 0, "gbm_bo_create %dx%d %08x failed", c->dma_w, c->dma_h,
 			c->dma_format);
@@ -177,7 +202,8 @@ static void frame_buffer_done(void *d, struct zwlr_screencopy_frame_v1 *f)
 	struct app *a = d;
 	struct capture *c = &a->cap;
 
-	if (!c->dmabuf_broken && c->off_dmabuf && ensure_dmabuf_buffer(a)) {
+	bool try_dma = !c->dma_impossible && c->n_copies >= c->shm_until;
+	if (try_dma && c->off_dmabuf && ensure_dmabuf_buffer(a)) {
 		c->using_shm = false;
 		zwlr_screencopy_frame_v1_copy(f, c->dma_buf);
 	} else if (c->off_shm && ensure_shm_buffer(a)) {
@@ -201,6 +227,13 @@ static void frame_ready(void *d, struct zwlr_screencopy_frame_v1 *f,
 	uint32_t sec_hi, uint32_t sec_lo, uint32_t nsec)
 {
 	struct app *a = d;
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	cap_ms_total += (t.tv_sec - cap_t0.tv_sec) * 1e3 +
+		(t.tv_nsec - cap_t0.tv_nsec) / 1e6;
+	cap_ms_n++;
+	if (!a->cap.using_shm)
+		a->cap.dma_fails = 0;
 	zwlr_screencopy_frame_v1_destroy(f);
 	a->cap.frame = NULL;
 	a->cap.content_new = true;
@@ -213,9 +246,15 @@ static void frame_failed(void *d, struct zwlr_screencopy_frame_v1 *f)
 	struct capture *c = &a->cap;
 	zwlr_screencopy_frame_v1_destroy(f);
 	c->frame = NULL;
-	if (!c->using_shm && !c->dmabuf_broken) {
-		LOGF(a, 0, "dmabuf copy failed, falling back to shm");
-		c->dmabuf_broken = true;
+	if (!c->using_shm && !c->dma_impossible) {
+		/* transient failures (mode flaps) just retry; only repeated
+		 * failures park us on shm, and only temporarily — sticking
+		 * there means ~3 fps compositor readbacks and torn frames */
+		if (++c->dma_fails >= 3) {
+			c->dma_fails = 0;
+			c->shm_until = c->n_copies + 300;
+			LOGF(a, 0, "dmabuf copy failing, shm for %d captures", 300);
+		}
 	} else {
 		LOGF(a, 1, "screencopy failed (transient)");
 	}
@@ -240,6 +279,8 @@ void capture_start(struct app *a)
 	if (c->frame || !a->src)
 		return;
 	c->off_dmabuf = c->off_shm = false;
+	c->n_copies++;
+	clock_gettime(CLOCK_MONOTONIC, &cap_t0);
 	c->frame = zwlr_screencopy_manager_v1_capture_output(a->screencopy,
 		1 /* overlay cursor */, a->src->wl);
 	zwlr_screencopy_frame_v1_add_listener(c->frame, &frame_listener, a);
@@ -263,10 +304,17 @@ void capture_update_texture(struct app *a)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
 	if (c->using_shm) {
-		/* wl_shm XRGB/ARGB8888 is BGRA in memory; shader swaps R/B */
+		/* wl_shm XRGB/ARGB8888 is BGRA in memory; shader swaps R/B.
+		 * SubImage into an existing allocation keeps the driver's
+		 * tiled storage in place instead of reallocating per frame. */
 		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c->sb_w, c->sb_h, 0,
-			GL_RGBA, GL_UNSIGNED_BYTE, c->shm_data);
+		if (c->tex_is_shm && c->tex_w == c->sb_w && c->tex_h == c->sb_h) {
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, c->sb_w, c->sb_h,
+				GL_RGBA, GL_UNSIGNED_BYTE, c->shm_data);
+		} else {
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c->sb_w, c->sb_h, 0,
+				GL_RGBA, GL_UNSIGNED_BYTE, c->shm_data);
+		}
 		c->tex_w = c->sb_w;
 		c->tex_h = c->sb_h;
 		c->tex_is_shm = true;
@@ -296,7 +344,7 @@ void capture_update_texture(struct app *a)
 			if (!c->image) {
 				LOGF(a, 0, "EGLImage import failed (0x%x), shm fallback",
 					eglGetError());
-				c->dmabuf_broken = true;
+				c->dma_impossible = true;
 				return;
 			}
 			c->need_reimport = false;
@@ -320,10 +368,6 @@ void capture_destroy(struct app *a)
 		wl_buffer_destroy(c->dma_buf);
 	if (c->bo)
 		gbm_bo_destroy(c->bo);
-	if (c->gbm)
-		gbm_device_destroy(c->gbm);
-	if (c->drm_fd >= 0)
-		close(c->drm_fd);
 	if (c->shm_wlbuf)
 		wl_buffer_destroy(c->shm_wlbuf);
 	if (c->shm_data)

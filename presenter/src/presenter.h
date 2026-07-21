@@ -11,19 +11,29 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <wayland-client.h>
-#include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
 #define MAX_WINDOWS 64
+#define SWAPCHAIN_LEN 3
 
 struct win {
 	/* desktop-relative pixels (source output coords) */
 	int32_t x, y, w, h;
 	int rank;      /* 0 = focused, 1 = next most recent, ... */
 	bool focused;
+};
+
+/* one presentation buffer: we render into it on v3d, sway composites it */
+struct swapbuf {
+	struct gbm_bo *bo;
+	EGLImageKHR image;
+	GLuint tex, fbo;
+	struct wl_buffer *wlbuf;
+	int w, h;
+	bool busy;             /* attached & not yet released by the compositor */
 };
 
 struct capture {
@@ -33,13 +43,14 @@ struct capture {
 	bool y_invert;
 
 	/* dmabuf path */
-	int drm_fd;
-	struct gbm_device *gbm;
 	struct gbm_bo *bo;
 	struct wl_buffer *dma_buf;
 	int bo_w, bo_h; uint32_t bo_format;
 	EGLImageKHR image;
-	bool dmabuf_broken;   /* copy failed once — stick to shm */
+	bool dma_impossible;  /* no gbm / EGL import failed — shm forever */
+	int dma_fails;        /* consecutive dmabuf copy failures */
+	int n_copies;         /* total capture attempts */
+	int shm_until;        /* use shm until n_copies reaches this */
 
 	/* shm path */
 	int memfd; void *shm_data; size_t shm_size;
@@ -77,15 +88,18 @@ struct app {
 	struct wl_surface *surf;
 	struct xdg_surface *xsurf;
 	struct xdg_toplevel *top;
-	struct wl_egl_window *egl_win;
 	struct wl_callback *frame_cb;
 	int32_t win_w, win_h;
 	bool configured, running;
 
+	/* EGL on the GBM platform, bound to the v3d render node: tiled
+	 * (UIF) buffers everywhere. The Wayland EGL platform is unusable on
+	 * split render/display boards — it goes linear-only. */
+	int drm_fd;
+	struct gbm_device *gbm;
 	EGLDisplay edpy;
-	EGLConfig ecfg;
 	EGLContext ectx;
-	EGLSurface esurf;
+	struct swapbuf sc[SWAPCHAIN_LEN];
 	GLuint prog;
 	GLint a_pos, a_uv, u_tex, u_swap_rb;
 
@@ -109,6 +123,10 @@ struct app {
 #define LOGF(app, lvl, ...) do { if ((app)->log >= (lvl)) { \
 	fprintf(stderr, "presenter: " __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
+/* capture latency stats, reset by the rate logger */
+extern double cap_ms_total;
+extern int cap_ms_n;
+
 /* capture.c */
 bool capture_init(struct app *a);
 void capture_start(struct app *a);
@@ -116,9 +134,8 @@ void capture_update_texture(struct app *a); /* needs GL current */
 void capture_destroy(struct app *a);
 
 /* render.c */
-bool render_init_egl(struct app *a);
-bool render_create_surface_objects(struct app *a);
-void render_frame(struct app *a);
+bool render_init_egl(struct app *a);   /* context + shaders, GBM platform */
+bool render_frame(struct app *a);      /* false if no free swapchain buffer */
 void render_destroy(struct app *a);
 
 /* sway.c */

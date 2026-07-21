@@ -1,4 +1,4 @@
-PKGS = wayland-client wayland-egl egl glesv2 gbm libdrm json-c
+PKGS = wayland-client egl glesv2 gbm libdrm json-c
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE \
           $(shell pkg-config --cflags $(PKGS)) -Igen
@@ -27,7 +27,7 @@ gen/%-client-protocol.h: %.xml | gen
 
 gen/%.o: gen/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
-gen/%.o: src/%.c $(GEN_H)
+gen/%.o: src/%.c src/presenter.h $(GEN_H)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 gen:

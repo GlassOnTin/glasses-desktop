@@ -3,11 +3,24 @@
 #include <string.h>
 #include <poll.h>
 #include <errno.h>
+#include <time.h>
 #include <gbm.h>
 #include "xdg-shell-client-protocol.h"
 #include "linux-dmabuf-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "presenter.h"
+
+static int n_render, n_capture;
+static double swap_ms_total, cb_ms_total;
+static int cb_n;
+static struct timespec swap_t1;
+
+static double ms_since(const struct timespec *t0)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (t.tv_sec - t0->tv_sec) * 1e3 + (t.tv_nsec - t0->tv_nsec) / 1e6;
+}
 
 /* ---- wl_output (v4 gives us the name directly) ---- */
 
@@ -119,15 +132,6 @@ static void xsurf_configure(void *d, struct xdg_surface *xs, uint32_t serial)
 		a->win_w = 1920;
 		a->win_h = 1080;
 	}
-	if (!a->egl_win) {
-		a->egl_win = wl_egl_window_create(a->surf, a->win_w, a->win_h);
-		if (!render_create_surface_objects(a)) {
-			a->running = false;
-			return;
-		}
-	} else {
-		wl_egl_window_resize(a->egl_win, a->win_w, a->win_h, 0, 0);
-	}
 	a->configured = true;
 	LOGF(a, 1, "configured %dx%d (%s)", a->win_w, a->win_h,
 		a->win_w >= 2 * a->win_h ? "SBS" : "2D");
@@ -143,8 +147,35 @@ static void frame_done(void *d, struct wl_callback *cb, uint32_t t)
 	struct app *a = d;
 	wl_callback_destroy(cb);
 	a->frame_cb = NULL;
+	cb_ms_total += ms_since(&swap_t1);
+	cb_n++;
 }
 static const struct wl_callback_listener frame_listener = { .done = frame_done };
+
+
+static void rate_log(struct app *a)
+{
+	static struct timespec t0;
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	if (!t0.tv_sec) {
+		t0 = t;
+		return;
+	}
+	double dt = (t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9;
+	if (dt < 5.0)
+		return;
+	LOGF(a, 1, "rate: %.1f renders/s, %.1f captures/s, copy %.1f ms, "
+		"swap %.1f ms, cb %.1f ms",
+		n_render / dt, n_capture / dt,
+		cap_ms_n ? cap_ms_total / cap_ms_n : 0.0,
+		n_render ? swap_ms_total / n_render : 0.0,
+		cb_n ? cb_ms_total / cb_n : 0.0);
+	n_render = n_capture = 0;
+	cap_ms_total = swap_ms_total = cb_ms_total = 0;
+	cap_ms_n = cb_n = 0;
+	t0 = t;
+}
 
 static void maybe_render(struct app *a)
 {
@@ -154,11 +185,26 @@ static void maybe_render(struct app *a)
 		return; /* nothing to show yet */
 	if (!a->cap.ready && !a->tree_dirty)
 		return;
-	a->cap.ready = false;
-	a->tree_dirty = false;
+	/* the frame request must precede the commit inside render_frame */
 	a->frame_cb = wl_surface_frame(a->surf);
 	wl_callback_add_listener(a->frame_cb, &frame_listener, a);
-	render_frame(a); /* ends in eglSwapBuffers → commit */
+	struct timespec r0;
+	clock_gettime(CLOCK_MONOTONIC, &r0);
+	if (!render_frame(a)) {
+		/* no free swapchain buffer or no texture yet — retried on
+		 * the next wakeup (buffer release / capture ready) */
+		wl_callback_destroy(a->frame_cb);
+		a->frame_cb = NULL;
+		if (!a->cap.tex_valid)
+			a->cap.ready = false; /* let a fresh capture start */
+		return;
+	}
+	a->cap.ready = false;
+	a->tree_dirty = false;
+	swap_ms_total += ms_since(&r0);
+	clock_gettime(CLOCK_MONOTONIC, &swap_t1);
+	n_render++;
+	rate_log(a);
 }
 
 /* ---- setup ---- */
@@ -175,6 +221,7 @@ int main(int argc, char **argv)
 		.src_name = "HEADLESS-1",
 		.eye_sign = 1,
 		.running = true,
+		.drm_fd = -1,
 	};
 	wl_list_init(&a.outputs);
 	a.pop = envf("GLASSES_DEPTH_POP", 8.0f);
@@ -275,12 +322,15 @@ int main(int argc, char **argv)
 			}
 		}
 
-		/* pace captures at render rate: only ask for the next frame
-		 * once the previous one has been consumed, else the capture
-		 * loop spins the compositor's render loop flat out */
-		if (!a.cap.frame && !a.cap.ready && !a.cap.content_new)
-			capture_start(&a);
 		maybe_render(&a);
+		/* pace captures at render rate (a free-running capture loop
+		 * spins the compositor flat out), but start the next copy
+		 * immediately after rendering so it overlaps presentation
+		 * instead of serializing with it */
+		if (!a.cap.frame && !a.cap.ready && !a.cap.content_new) {
+			capture_start(&a);
+			n_capture++;
+		}
 	}
 
 	capture_destroy(&a);

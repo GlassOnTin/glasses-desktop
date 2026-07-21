@@ -14,6 +14,10 @@ STATE="${XDG_STATE_HOME:-$HOME/.local/state}/glasses-desktop"
 mkdir -p "$STATE"
 LOG="$STATE/setup.log"
 exec >>"$LOG" 2>&1
+# keep the logs bounded
+for f in "$LOG" "$STATE/presenter.log"; do
+    [ -f "$f" ] && [ "$(stat -c%s "$f")" -gt 1000000 ] && : > "$f"
+done
 echo "=== setup $$ $(date) ==="
 
 # only one watcher may run. flock, not pgrep: command-substitution
@@ -32,7 +36,7 @@ echo $$ >"$LOCK.pid"
 # prefer the depth presenter; wl-mirror is the fallback
 if command -v glasses-presenter >/dev/null; then
     MIRROR_APP=glasses-presenter
-    MIRROR_CMD=glasses-presenter
+    MIRROR_CMD="sh -c 'exec glasses-presenter 2>>$STATE/presenter.log'"
 else
     MIRROR_APP=at.yrlf.wl_mirror
     MIRROR_CMD='wl-mirror HEADLESS-1'

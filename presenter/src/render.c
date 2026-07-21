@@ -1,8 +1,19 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <gbm.h>
+#include <drm_fourcc.h>
 #include "xdg-shell-client-protocol.h"
+#include "linux-dmabuf-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "presenter.h"
+
+static PFNEGLCREATEIMAGEKHRPROC p_CreateImage;
+static PFNEGLDESTROYIMAGEKHRPROC p_DestroyImage;
+static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC p_ImageTargetTexture;
+static PFNEGLQUERYDMABUFMODIFIERSEXTPROC p_QueryMods;
 
 static const char *VS =
 	"attribute vec2 a_pos;\n"
@@ -20,33 +31,6 @@ static const char *FS =
 	"  gl_FragColor = vec4(u_swap_rb ? c.bgr : c.rgb, 1.0);\n"
 	"}\n";
 
-bool render_init_egl(struct app *a)
-{
-	a->edpy = eglGetDisplay((EGLNativeDisplayType)a->dpy);
-	if (a->edpy == EGL_NO_DISPLAY || !eglInitialize(a->edpy, NULL, NULL)) {
-		fprintf(stderr, "presenter: eglInitialize failed\n");
-		return false;
-	}
-	EGLint n, cfg_attrs[] = {
-		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-		EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-		EGL_NONE
-	};
-	if (!eglChooseConfig(a->edpy, cfg_attrs, &a->ecfg, 1, &n) || n < 1) {
-		fprintf(stderr, "presenter: no EGL config\n");
-		return false;
-	}
-	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-	eglBindAPI(EGL_OPENGL_ES_API);
-	a->ectx = eglCreateContext(a->edpy, a->ecfg, EGL_NO_CONTEXT, ctx_attrs);
-	if (a->ectx == EGL_NO_CONTEXT) {
-		fprintf(stderr, "presenter: eglCreateContext failed\n");
-		return false;
-	}
-	return true;
-}
-
 static GLuint compile(GLenum type, const char *src)
 {
 	GLuint s = glCreateShader(type);
@@ -63,16 +47,51 @@ static GLuint compile(GLenum type, const char *src)
 	return s;
 }
 
-bool render_create_surface_objects(struct app *a)
+bool render_init_egl(struct app *a)
 {
-	a->esurf = eglCreateWindowSurface(a->edpy, a->ecfg,
-		(EGLNativeWindowType)a->egl_win, NULL);
-	if (a->esurf == EGL_NO_SURFACE ||
-	    !eglMakeCurrent(a->edpy, a->esurf, a->esurf, a->ectx)) {
-		fprintf(stderr, "presenter: EGL surface/current failed\n");
+	for (int i = 128; i < 132; i++) {
+		char path[32];
+		snprintf(path, sizeof path, "/dev/dri/renderD%d", i);
+		a->drm_fd = open(path, O_RDWR | O_CLOEXEC);
+		if (a->drm_fd < 0)
+			continue;
+		a->gbm = gbm_create_device(a->drm_fd);
+		if (a->gbm)
+			break;
+		close(a->drm_fd);
+		a->drm_fd = -1;
+	}
+	if (!a->gbm) {
+		fprintf(stderr, "presenter: no usable render node\n");
 		return false;
 	}
-	eglSwapInterval(a->edpy, 0); /* throttled by wl frame callbacks */
+
+	a->edpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, a->gbm, NULL);
+	if (a->edpy == EGL_NO_DISPLAY || !eglInitialize(a->edpy, NULL, NULL)) {
+		fprintf(stderr, "presenter: eglInitialize (gbm) failed\n");
+		return false;
+	}
+	const char *exts = eglQueryString(a->edpy, EGL_EXTENSIONS);
+	if (!exts || !strstr(exts, "EGL_KHR_surfaceless_context") ||
+	    !strstr(exts, "EGL_KHR_no_config_context")) {
+		fprintf(stderr, "presenter: missing surfaceless/no-config EGL\n");
+		return false;
+	}
+	p_CreateImage = (void *)eglGetProcAddress("eglCreateImageKHR");
+	p_DestroyImage = (void *)eglGetProcAddress("eglDestroyImageKHR");
+	p_ImageTargetTexture =
+		(void *)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+	p_QueryMods = (void *)eglGetProcAddress("eglQueryDmaBufModifiersEXT");
+
+	eglBindAPI(EGL_OPENGL_ES_API);
+	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+	a->ectx = eglCreateContext(a->edpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT,
+		ctx_attrs);
+	if (a->ectx == EGL_NO_CONTEXT ||
+	    !eglMakeCurrent(a->edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, a->ectx)) {
+		fprintf(stderr, "presenter: surfaceless context failed\n");
+		return false;
+	}
 
 	GLuint vs = compile(GL_VERTEX_SHADER, VS);
 	GLuint fs = compile(GL_FRAGMENT_SHADER, FS);
@@ -97,8 +116,125 @@ bool render_create_surface_objects(struct app *a)
 	return true;
 }
 
+/* ---- swapchain ---- */
+
+static void swapbuf_release(void *d, struct wl_buffer *b)
+{
+	((struct swapbuf *)d)->busy = false;
+}
+static const struct wl_buffer_listener swapbuf_listener = {
+	.release = swapbuf_release,
+};
+
+static void swapbuf_destroy(struct app *a, struct swapbuf *b)
+{
+	if (b->fbo)
+		glDeleteFramebuffers(1, &b->fbo);
+	if (b->tex)
+		glDeleteTextures(1, &b->tex);
+	if (b->image)
+		p_DestroyImage(a->edpy, b->image);
+	if (b->wlbuf)
+		wl_buffer_destroy(b->wlbuf);
+	if (b->bo)
+		gbm_bo_destroy(b->bo);
+	memset(b, 0, sizeof *b);
+}
+
+static bool swapbuf_create(struct app *a, struct swapbuf *b, int w, int h)
+{
+	uint64_t mods[64];
+	EGLint nmods = 0;
+	if (p_QueryMods)
+		p_QueryMods(a->edpy, DRM_FORMAT_XRGB8888, 64,
+			(EGLuint64KHR *)mods, NULL, &nmods);
+	if (nmods > 0)
+		b->bo = gbm_bo_create_with_modifiers2(a->gbm, w, h,
+			DRM_FORMAT_XRGB8888, mods, nmods, GBM_BO_USE_RENDERING);
+	if (!b->bo)
+		b->bo = gbm_bo_create(a->gbm, w, h, DRM_FORMAT_XRGB8888,
+			GBM_BO_USE_RENDERING);
+	if (!b->bo)
+		return false;
+
+	uint32_t stride = gbm_bo_get_stride(b->bo);
+	uint64_t mod = gbm_bo_get_modifier(b->bo);
+	int fd = gbm_bo_get_fd(b->bo);
+	if (fd < 0)
+		return false;
+
+	EGLint attrs[] = {
+		EGL_WIDTH, w,
+		EGL_HEIGHT, h,
+		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
+		EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+		EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)stride,
+		EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(mod & 0xffffffff),
+		EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(mod >> 32),
+		EGL_NONE
+	};
+	b->image = p_CreateImage(a->edpy, EGL_NO_CONTEXT,
+		EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
+	if (!b->image) {
+		LOGF(a, 0, "render buffer EGLImage failed (0x%x)", eglGetError());
+		close(fd);
+		return false;
+	}
+
+	glGenTextures(1, &b->tex);
+	glBindTexture(GL_TEXTURE_2D, b->tex);
+	p_ImageTargetTexture(GL_TEXTURE_2D, b->image);
+	glGenFramebuffers(1, &b->fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, b->fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+		GL_TEXTURE_2D, b->tex, 0);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		LOGF(a, 0, "render FBO incomplete");
+		close(fd);
+		return false;
+	}
+
+	struct zwp_linux_buffer_params_v1 *params =
+		zwp_linux_dmabuf_v1_create_params(a->dmabuf);
+	zwp_linux_buffer_params_v1_add(params, fd, 0, 0, stride,
+		mod >> 32, mod & 0xffffffff);
+	b->wlbuf = zwp_linux_buffer_params_v1_create_immed(params, w, h,
+		DRM_FORMAT_XRGB8888, 0);
+	zwp_linux_buffer_params_v1_destroy(params);
+	wl_buffer_add_listener(b->wlbuf, &swapbuf_listener, b);
+	close(fd);
+
+	b->w = w;
+	b->h = h;
+	b->busy = false;
+	LOGF(a, 1, "render buffer %dx%d mod %llx", w, h,
+		(unsigned long long)mod);
+	return true;
+}
+
+static struct swapbuf *sc_acquire(struct app *a)
+{
+	for (int i = 0; i < SWAPCHAIN_LEN; i++) {
+		struct swapbuf *b = &a->sc[i];
+		if (b->busy)
+			continue;
+		if (b->w != a->win_w || b->h != a->win_h) {
+			swapbuf_destroy(a, b);
+			if (!swapbuf_create(a, b, a->win_w, a->win_h))
+				return NULL;
+		}
+		return b;
+	}
+	return NULL; /* all busy — retried when a release event arrives */
+}
+
+/* ---- drawing ---- */
+
 /* Draw a desktop-space rect (dx,dy,dw,dh) shifted by off_x px, into the
- * current viewport which maps the desktop (desk_w × desk_h) to NDC. */
+ * current viewport which maps the desktop (desk_w × desk_h) to NDC.
+ * Rendering targets an FBO whose memory consumers read top-down, so the
+ * desktop top maps to NDC -1. */
 static void draw_rect(struct app *a, float dx, float dy, float dw, float dh,
 	float off_x)
 {
@@ -121,8 +257,8 @@ static void draw_rect(struct app *a, float dx, float dy, float dw, float dh,
 	}
 	float px0 = (x0 + off_x) / W * 2.0f - 1.0f;
 	float px1 = (x1 + off_x) / W * 2.0f - 1.0f;
-	float py0 = 1.0f - (y0 / H) * 2.0f;   /* desktop top → NDC +1 */
-	float py1 = 1.0f - (y1 / H) * 2.0f;
+	float py0 = (y0 / H) * 2.0f - 1.0f;
+	float py1 = (y1 / H) * 2.0f - 1.0f;
 
 	const float verts[] = {
 		px0, py0, u0, v0,
@@ -159,11 +295,15 @@ static void draw_eye(struct app *a, float shift_sign)
 	}
 }
 
-void render_frame(struct app *a)
+bool render_frame(struct app *a)
 {
+	struct swapbuf *buf = sc_acquire(a);
+	if (!buf)
+		return false;
+
 	capture_update_texture(a);
 	if (!a->cap.tex_valid)
-		return;
+		return false;
 
 	/* until sway tells us the desktop size, assume the capture is it */
 	if (!a->have_desk) {
@@ -171,6 +311,7 @@ void render_frame(struct app *a)
 		a->desk_h = a->cap.tex_h;
 	}
 
+	glBindFramebuffer(GL_FRAMEBUFFER, buf->fbo);
 	glViewport(0, 0, a->win_w, a->win_h);
 	glClearColor(0, 0, 0, 1);
 	glClear(GL_COLOR_BUFFER_BIT);
@@ -193,17 +334,29 @@ void render_frame(struct app *a)
 		draw_eye(a, 0.0f); /* 2D: offsets vanish, plain mirror */
 	}
 
-	eglSwapBuffers(a->edpy, a->esurf);
+	/* v3d attaches an implicit fence on submit; the compositor's read
+	 * of the dmabuf orders against it */
+	glFlush();
+
+	wl_surface_attach(a->surf, buf->wlbuf, 0, 0);
+	wl_surface_damage_buffer(a->surf, 0, 0, buf->w, buf->h);
+	wl_surface_commit(a->surf);
+	buf->busy = true;
+	return true;
 }
 
 void render_destroy(struct app *a)
 {
 	if (a->edpy == EGL_NO_DISPLAY)
 		return;
+	for (int i = 0; i < SWAPCHAIN_LEN; i++)
+		swapbuf_destroy(a, &a->sc[i]);
 	eglMakeCurrent(a->edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-	if (a->esurf != EGL_NO_SURFACE)
-		eglDestroySurface(a->edpy, a->esurf);
 	if (a->ectx != EGL_NO_CONTEXT)
 		eglDestroyContext(a->edpy, a->ectx);
 	eglTerminate(a->edpy);
+	if (a->gbm)
+		gbm_device_destroy(a->gbm);
+	if (a->drm_fd >= 0)
+		close(a->drm_fd);
 }
