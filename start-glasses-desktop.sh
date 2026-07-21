@@ -10,4 +10,5 @@
 # that get mirrored to the glasses. Forcing software cursors draws it into
 # every frame — screencopy then shows it in both eyes.
 export WLR_NO_HARDWARE_CURSORS=1
+export XDG_CURRENT_DESKTOP=sway
 exec sway -c "${XDG_CONFIG_HOME:-$HOME/.config}/sway-glasses/config"

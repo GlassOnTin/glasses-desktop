@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Log Out (Glasses)
+Comment=Exit the glasses desktop session
+Exec=swaymsg exit
+Icon=system-log-out
+Type=Application
+Categories=System;

@@ -27,6 +27,8 @@ fi
 echo "==> Registering login-manager session"
 sudo install -Dm644 "$SRC/glasses-desktop.desktop" \
     /usr/share/wayland-sessions/glasses-desktop.desktop
+sudo install -Dm644 "$SRC/glasses-logout.desktop" \
+    /usr/share/applications/glasses-logout.desktop
 
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}/sway-glasses/config"
 if [ -e "$CFG" ]; then
