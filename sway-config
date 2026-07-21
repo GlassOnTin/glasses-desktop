@@ -60,4 +60,12 @@ for_window [app_id="glasses-presenter"] border none
 # the Pi's regular panel (start menu, clock, volume, wifi) on the desktop
 exec wf-panel-pi
 
+# daily-driver session services: portals/apps need the session env in
+# dbus, a polkit agent for GUI privilege prompts, wallpaper, idle blanking
+exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+# (bracket trick keeps pgrep from matching this command line itself)
+exec sh -c 'pgrep -f "polkit-[m]ate-auth|lxpolki[t]" >/dev/null && exit 0; A=/usr/libexec/polkit-mate-authentication-agent-1; [ -x $A ] && exec $A; exec lxpolkit'
+exec sh -c 'W=$(ls /usr/share/rpd-wallpaper/* 2>/dev/null | head -1); exec swaybg ${W:+-i "$W"} -m fill -c 101418'
+exec swayidle -w timeout 600 'swaymsg "output * power off"' resume 'swaymsg "output * power on"'
+
 exec glasses-desktop-setup

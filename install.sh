@@ -5,6 +5,7 @@ set -e
 
 echo "==> Installing dependencies"
 sudo apt-get install -y --no-install-recommends git sway wl-mirror foot python3 \
+    swaybg swayidle lxpolkit \
     gcc make pkg-config libwayland-dev libwayland-bin wayland-protocols \
     libegl-dev libgles-dev libgbm-dev libdrm-dev libjson-c-dev
 

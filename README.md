@@ -25,10 +25,23 @@ curl -fsSL https://raw.githubusercontent.com/GlassOnTin/glasses-desktop/main/ins
 
 ## Run
 
-**From the login screen (recommended):** log out, pick **Glasses Desktop
-(SBS)** from the session menu, log in. Log out (`Super+Shift+e`) to return
-to your normal desktop. If your machine auto-logs-in (default on Raspberry
-Pi OS), the session menu appears after logging out once.
+**As the default session (recommended):** the launcher is safe to set as
+your login default — it checks the EDID of connected displays and starts
+the glasses desktop only when SBS glasses (Viture/XREAL/Rokid) are
+attached, handing over to the stock desktop otherwise. On Raspberry Pi OS:
+
+```
+sudo sed -i.bak 's/^\(autologin-session\|user-session\)=.*/\1=glasses-desktop/' /etc/lightdm/lightdm.conf
+```
+
+Reboot with the glasses plugged in for 3D, without them for the normal
+desktop. Revert by restoring `lightdm.conf.bak`. Tune detection with
+`GLASSES_EDID_MATCH`, `GLASSES_FALLBACK_SESSION`, or force a side with
+`GLASSES_DESKTOP_FORCE=1|0`.
+
+**One-off from the login screen:** log out, pick **Glasses Desktop (SBS)**
+from the session menu, log in. Log out (menu → Log Out (Glasses), or
+`Super+Shift+e`) to return.
 
 **Without logging out:** switch to a TTY (`Ctrl+Alt+F3`), log in, run
 `glasses-desktop`. Your existing session pauses on its VT while sway owns
