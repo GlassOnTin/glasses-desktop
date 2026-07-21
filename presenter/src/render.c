@@ -146,8 +146,16 @@ static void draw_eye(struct app *a, float shift_sign)
 	draw_rect(a, 0, 0, a->desk_w, a->desk_h, 0); /* background at screen depth */
 	for (int i = 0; i < a->nwins; i++) {
 		struct win *w = &a->wins[i];
-		draw_rect(a, w->x, w->y, w->w, w->h,
-			shift_sign * disparity(a, w->rank));
+		float d = shift_sign * disparity(a, w->rank);
+		/* extend the trailing edge by the shift so the quad covers the
+		 * window's own baked copy in the background — otherwise a
+		 * ghost border sliver peeks out beside every window edge */
+		if (d > 0)
+			draw_rect(a, w->x - d, w->y, w->w + d, w->h, d);
+		else if (d < 0)
+			draw_rect(a, w->x, w->y, w->w - d, w->h, d);
+		else
+			draw_rect(a, w->x, w->y, w->w, w->h, 0);
 	}
 }
 
