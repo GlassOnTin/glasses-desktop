@@ -57,8 +57,9 @@ assign [app_id="glasses-presenter"] workspace mirror
 for_window [app_id="glasses-presenter"] floating disable
 for_window [app_id="glasses-presenter"] border none
 
-# the Pi's regular panel (start menu, clock, volume, wifi) on the desktop
-exec wf-panel-pi
+# (the Pi panel wf-panel-pi is launched by glasses-desktop-setup once the
+# desktop output exists, pinned to it — started here it races the output
+# creation and lands on the physical output instead)
 
 # daily-driver session services: portals/apps need the session env in
 # dbus, a polkit agent for GUI privilege prompts, wallpaper, idle blanking

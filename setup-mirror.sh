@@ -43,6 +43,41 @@ else
 fi
 export MIRROR_APP
 
+panel_alive() {
+    for pid in $(pgrep -x wf-panel-pi); do
+        if grep -qz "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" "/proc/$pid/environ" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# kill by comm, but ONLY processes of this session — a plain pkill also
+# hits siblings in other sessions (nested test rigs, another seat) and two
+# watchers then kill each other's mirrors in an endless loop
+kill_mine() {
+    for pid in $(pgrep -x "$1"); do
+        if grep -qz "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" "/proc/$pid/environ" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
+}
+
+# The panel picks its monitor when it starts and never migrates when
+# outputs appear later, so started blind it races the HEADLESS-1 creation
+# and can land on the physical output (invisible in the mirrored desktop).
+# Pin it: session-scoped config = the user's own panel config plus a
+# monitor= pin. It attaches to the pinned output even if that appears
+# after the panel starts.
+PANEL_INI="$STATE/wf-panel-pi.ini"
+USER_INI="${XDG_CONFIG_HOME:-$HOME/.config}/wf-panel-pi/wf-panel-pi.ini"
+{
+    echo '[panel]'
+    echo 'monitor=HEADLESS-1'
+    [ -f "$USER_INI" ] && grep -v -e '^monitor=' -e '^\[panel\]$' "$USER_INI"
+} > "$PANEL_INI"
+PANEL_CMD="wf-panel-pi -c $PANEL_INI"
+
 if ! swaymsg -t get_outputs -r | grep -q '"HEADLESS-1"'; then
     swaymsg create_output
 fi
@@ -55,7 +90,9 @@ for i in 1 2 3 4; do swaymsg "workspace $i output HEADLESS-1"; done
 swaymsg 'input type:pointer map_to_output HEADLESS-1'
 swaymsg 'input type:touchpad map_to_output HEADLESS-1'
 swaymsg workspace 1
-swaymsg exec foot
+if command -v wf-panel-pi >/dev/null && ! panel_alive; then
+    swaymsg exec "$PANEL_CMD"
+fi
 
 # Prints one line:
 #   NOPHYS
@@ -112,26 +149,6 @@ ok = mirror_ok and have == want and not strays
 print('OK' if ok else 'FIX', phys['name'], w, h, want, have,
       int(mirror_ok), ','.join(strays) or '-')
 PYEOF
-}
-
-panel_alive() {
-    for pid in $(pgrep -x wf-panel-pi); do
-        if grep -qz "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" "/proc/$pid/environ" 2>/dev/null; then
-            return 0
-        fi
-    done
-    return 1
-}
-
-# kill by comm, but ONLY processes of this session — a plain pkill also
-# hits siblings in other sessions (nested test rigs, another seat) and two
-# watchers then kill each other's mirrors in an endless loop
-kill_mine() {
-    for pid in $(pgrep -x "$1"); do
-        if grep -qz "WAYLAND_DISPLAY=$WAYLAND_DISPLAY" "/proc/$pid/environ" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-        fi
-    done
 }
 
 ipc_fails=0
@@ -192,7 +209,7 @@ while :; do
         ipc_fails=0
         if command -v wf-panel-pi >/dev/null && ! panel_alive; then
             echo "$(date +%T) panel dead, respawning"
-            swaymsg exec wf-panel-pi
+            swaymsg exec "$PANEL_CMD"
             sleep 2
         fi
         ;;
